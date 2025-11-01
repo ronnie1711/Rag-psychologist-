@@ -12,16 +12,6 @@ with open("data/chunks.pkl", "rb") as f:
     chunks = pickle.load(f)
 
 
-def embed(text):
-    emb = client.embeddings.create(model="text-embedding-3-small", input=text)
-    return np.array(emb.data[0].embedding, dtype="float32").reshape(1, -1)
-
-def search_chunks(query, top_k=4):
-    query_emb = embed(query)
-    D, I = index.search(query_emb, top_k)
-    return [chunks[i] for i in I[0] if 0 <= i < len(chunks)]
-
-
 RAG_TRIGGERS = [
     "how", "what can i do", "what should i do", "how can i",
     "techniques", "methods", "ways to", "exercises", "strategies",
@@ -32,20 +22,34 @@ RAG_TRIGGERS = [
 def needs_rag(text):
     return any(kw in text.lower() for kw in RAG_TRIGGERS)
 
+def embed(text):
+    emb = client.embeddings.create(model="text-embedding-3-small", input=text)
+    return np.array(emb.data[0].embedding, dtype="float32").reshape(1, -1)
 
-conversation_history = []
-memory_summary = ""
+def search_chunks(query, top_k=4):
+    query_emb = embed(query)
+    D, I = index.search(query_emb, top_k)
+    return [chunks[i] for i in I[0] if 0 <= i < len(chunks)]
 
 
-def rag_psychologist(user_input):
-    global conversation_history, memory_summary
+sessions = {}  # структура: { session_id: {history: [...], memory_summary: "..."} }
+
+def get_session(session_id: str):
+    if session_id not in sessions:
+        sessions[session_id] = {"history": [], "memory_summary": ""}
+    return sessions[session_id]
+
+
+def rag_psychologist(user_input, session_id="default"):
+    session = get_session(session_id)
+    history = session["history"]
+    memory_summary = session["memory_summary"]
 
     use_rag = needs_rag(user_input)
     retrieved_texts = search_chunks(user_input, top_k=4) if use_rag else []
     context = "\n\n".join(retrieved_texts)
 
-    
-    dialogue_context = "\n".join([f"{role}: {text}" for role, text in conversation_history[-5:]])
+    dialogue_context = "\n".join([f"{role}: {msg}" for role, msg in history[-5:]])
     memory_section = f"\n\nMemory summary:\n{memory_summary}" if memory_summary else ""
 
     prompt = f"""
@@ -73,9 +77,11 @@ Use techniques or exercises only if relevant.
     )
     reply = completion.choices[0].message.content.strip()
 
- 
-    conversation_history.append(("User", user_input))
-    conversation_history.append(("AI", reply))
+  
+    history.append(("User", user_input))
+    history.append(("AI", reply))
+    session["history"] = history
+    sessions[session_id] = session
 
     return reply
 
@@ -84,5 +90,8 @@ Use techniques or exercises only if relevant.
 async def chat(request: Request):
     data = await request.json()
     user_message = data.get("message", "")
-    response = rag_psychologist(user_message)
-    return {"response": response}
+    session_id = data.get("session_id", "default")  # можно передавать с фронта
+    response = rag_psychologist(user_message, session_id=session_id)
+    return {"response": response, "session_id": session_id}
+
+
