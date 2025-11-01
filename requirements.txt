@@ -1,0 +1,5 @@
+openai
+faiss-cpu
+fastapi
+uvicorn
+numpy
